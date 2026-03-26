@@ -194,6 +194,14 @@ class CommandProcessorTests(unittest.TestCase):
         lines = self.processor.handle(['save', 'runtime', 'beans'])
         self.assertEqual(lines, ['runtime saved'])
 
+    def test_help_mentions_private_tools_and_approval_flow(self) -> None:
+        lines = self.processor.handle(['help'])
+
+        self.assertTrue(any('IRC awareness' in line for line in lines))
+        self.assertTrue(any('safe web fetch' in line for line in lines))
+        self.assertTrue(any('typed memories' in line for line in lines))
+        self.assertTrue(any('approval IDs' in line for line in lines))
+
     def test_approvals_lists_pending_items(self) -> None:
         lines = self.processor.handle(['approvals'])
         self.assertEqual(lines, ['approval list'])

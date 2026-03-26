@@ -271,8 +271,11 @@ class CommandProcessor:
     def _help_lines(self) -> list[str]:
         return [
             f"Queries: '{self.prefix} ask <prompt>', '{self.bot_nick}: <prompt>', or send a private message.",
-            f"Commands: {self.prefix} help | {self.prefix} status | {self.prefix} show system | {self.prefix} show params | {self.prefix} context [status|reset]",
-            "Admin: set system/model/temperature/top_p/max_tokens/reply_interval_seconds/stream/openrouter_key, clear openrouter_key, save runtime, approvals, approve, reject, context reset, and reset; append the admin password or password=<value>.",
+            f"Commands: {self.prefix} help | {self.prefix} status | {self.prefix} show system | {self.prefix} show params | {self.prefix} context [status|reset] | {self.prefix} approvals",
+            "Private features: IRC awareness (server/channels/users/topics/nick changes), WHOIS lookups, safe web fetch, typed memories, and subject profiles.",
+            "Private chat requests: ask about users/server state, fetch a public URL, remember facts/notes, recall memories, or ask what Beatrice knows about someone.",
+            "Admin commands: set system/model/temperature/top_p/max_tokens/reply_interval_seconds/stream/openrouter_key, clear openrouter_key, save runtime, approve <id>, reject <id>, context reset, and reset; append the admin password or password=<value>.",
+            "Dangerous autonomous actions never self-apply: they create approval IDs, and an admin must approve them in a private message with approve/reject.",
         ]
 
     def _status_line(self) -> str:

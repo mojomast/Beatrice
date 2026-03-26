@@ -25,6 +25,9 @@ DEFAULT_SECRETS_FILE = "bot/secrets.json"
 DEFAULT_RUNTIME_FILE = "data/beatrice_runtime.json"
 DEFAULT_MEMORY_DB_FILE = "data/beatrice_memory.sqlite3"
 DEFAULT_AUDIT_LOG_FILE = "data/beatrice_audit.jsonl"
+DEFAULT_CHILD_BOTS_FILE = "data/beatrice_children.json"
+DEFAULT_CHILD_STATE_FILE = "data/beatrice_children_state.json"
+DEFAULT_CHILD_DATA_DIR = "data/children"
 DEFAULT_IRC_SERVER = "irc.ussyco.de"
 DEFAULT_IRC_PORT = 6667
 DEFAULT_IRC_NICK = "Beatrice"
@@ -37,6 +40,9 @@ DEFAULT_IRC_MAX_LINE_BYTES = 2048
 DEFAULT_HISTORY_TURNS = 4
 DEFAULT_REPLY_INTERVAL_SECONDS = 8.0
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 900.0
+DEFAULT_RESEARCH_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_CODE_MODEL = "qwen/qwen3-coder-30b-a3b-instruct"
+DEFAULT_CHILD_MODEL = DEFAULT_RESEARCH_MODEL
 
 MIN_TEMPERATURE = 0.0
 MAX_TEMPERATURE = 2.0
@@ -143,9 +149,50 @@ def default_irc_user(nick: str) -> str:
 
 
 @dataclass(frozen=True)
+class ModelRoutes:
+    chat: str | None = None
+    research: str | None = None
+    code: str | None = None
+
+    @classmethod
+    def from_mapping(cls, data: object) -> "ModelRoutes":
+        if not isinstance(data, dict):
+            return cls()
+
+        def clean(key: str) -> str | None:
+            raw = data.get(key)
+            if raw is None:
+                return None
+            value = str(raw).strip()
+            return value or None
+
+        return cls(
+            chat=clean("chat"),
+            research=clean("research"),
+            code=clean("code"),
+        )
+
+    def resolve(self, route: str, fallback: str) -> str:
+        value = getattr(self, route, None)
+        return value or fallback
+
+    def to_mapping(self) -> dict[str, str | None]:
+        return {
+            "chat": self.chat,
+            "research": self.research,
+            "code": self.code,
+        }
+
+
+@dataclass(frozen=True)
 class RuntimeDefaults:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     model: str = DEFAULT_MODEL
+    models: ModelRoutes = ModelRoutes(
+        chat=None,
+        research=DEFAULT_RESEARCH_MODEL,
+        code=DEFAULT_CODE_MODEL,
+    )
     temperature: float = 0.7
     top_p: float = 1.0
     max_tokens: int = 700
@@ -159,6 +206,15 @@ class RuntimeDefaults:
         return cls(
             system_prompt=str(data.get("system_prompt", DEFAULT_SYSTEM_PROMPT)).strip() or DEFAULT_SYSTEM_PROMPT,
             model=str(data.get("model", DEFAULT_MODEL)).strip() or DEFAULT_MODEL,
+            models=ModelRoutes.from_mapping(
+                data.get(
+                    "models",
+                    {
+                        "research": DEFAULT_RESEARCH_MODEL,
+                        "code": DEFAULT_CODE_MODEL,
+                    },
+                )
+            ),
             temperature=clamp_float(data.get("temperature", 0.7), MIN_TEMPERATURE, MAX_TEMPERATURE),
             top_p=clamp_float(data.get("top_p", 1.0), MIN_TOP_P, MAX_TOP_P),
             max_tokens=clamp_int(data.get("max_tokens", 700), MIN_MAX_TOKENS, MAX_MAX_TOKENS),
@@ -171,6 +227,7 @@ class RuntimeDefaults:
 class RuntimeConfig:
     system_prompt: str
     model: str
+    models: ModelRoutes
     temperature: float
     top_p: float
     max_tokens: int
@@ -183,6 +240,7 @@ class RuntimeConfig:
         return cls(
             system_prompt=baseline.system_prompt,
             model=baseline.model,
+            models=baseline.models,
             temperature=baseline.temperature,
             top_p=baseline.top_p,
             max_tokens=baseline.max_tokens,
@@ -194,6 +252,7 @@ class RuntimeConfig:
         return RuntimeConfig(
             system_prompt=self.system_prompt,
             model=self.model,
+            models=self.models,
             temperature=self.temperature,
             top_p=self.top_p,
             max_tokens=self.max_tokens,
@@ -205,6 +264,7 @@ class RuntimeConfig:
         fresh = RuntimeConfig.from_defaults(defaults)
         self.system_prompt = fresh.system_prompt
         self.model = fresh.model
+        self.models = fresh.models
         self.temperature = fresh.temperature
         self.top_p = fresh.top_p
         self.max_tokens = fresh.max_tokens
@@ -218,6 +278,15 @@ class RuntimeConfig:
     def set_model(self, value: str) -> str:
         self.model = value.strip()
         return self.model
+
+    def set_models(self, value: object) -> dict[str, str | None]:
+        updates = ModelRoutes.from_mapping(value)
+        self.models = ModelRoutes(
+            chat=updates.chat or self.models.chat,
+            research=updates.research or self.models.research,
+            code=updates.code or self.models.code,
+        )
+        return self.models.to_mapping()
 
     def set_temperature(self, value: float) -> float:
         self.temperature = clamp_float(value, MIN_TEMPERATURE, MAX_TEMPERATURE)
@@ -253,10 +322,19 @@ class RuntimeConfig:
             f"reply_interval_seconds={self.reply_interval_seconds:.0f}"
         )
 
+    def model_for(self, route: str) -> str:
+        return self.models.resolve(route, self.model)
+
+    def for_route(self, route: str) -> "RuntimeConfig":
+        copy = self.snapshot()
+        copy.model = self.model_for(route)
+        return copy
+
     def to_mapping(self) -> dict[str, object]:
         return {
             "system_prompt": self.system_prompt,
             "model": self.model,
+            "models": self.models.to_mapping(),
             "temperature": self.temperature,
             "top_p": self.top_p,
             "max_tokens": self.max_tokens,
@@ -271,6 +349,8 @@ class RuntimeConfig:
                 actual = self.set_system_prompt(str(value))
             elif key == "model":
                 actual = self.set_model(str(value))
+            elif key == "models":
+                actual = self.set_models(value)
             elif key == "temperature":
                 actual = self.set_temperature(float(value))
             elif key == "top_p":
@@ -370,6 +450,10 @@ class BotSettings:
     runtime_file: str = DEFAULT_RUNTIME_FILE
     memory_db_file: str = DEFAULT_MEMORY_DB_FILE
     audit_log_file: str = DEFAULT_AUDIT_LOG_FILE
+    child_bots_file: str = DEFAULT_CHILD_BOTS_FILE
+    child_state_file: str = DEFAULT_CHILD_STATE_FILE
+    child_data_dir: str = DEFAULT_CHILD_DATA_DIR
+    child_default_model: str = DEFAULT_CHILD_MODEL
     history_turns: int = DEFAULT_HISTORY_TURNS
     runtime_defaults: RuntimeDefaults = RuntimeDefaults()
 
@@ -453,6 +537,10 @@ class BotSettings:
             runtime_file=os.getenv("BOT_RUNTIME_FILE", str(bot.get("runtime_file", DEFAULT_RUNTIME_FILE))).strip() or DEFAULT_RUNTIME_FILE,
             memory_db_file=os.getenv("BOT_MEMORY_DB_FILE", str(bot.get("memory_db_file", DEFAULT_MEMORY_DB_FILE))).strip() or DEFAULT_MEMORY_DB_FILE,
             audit_log_file=os.getenv("BOT_AUDIT_LOG_FILE", str(bot.get("audit_log_file", DEFAULT_AUDIT_LOG_FILE))).strip() or DEFAULT_AUDIT_LOG_FILE,
+            child_bots_file=os.getenv("BOT_CHILD_BOTS_FILE", str(bot.get("child_bots_file", DEFAULT_CHILD_BOTS_FILE))).strip() or DEFAULT_CHILD_BOTS_FILE,
+            child_state_file=os.getenv("BOT_CHILD_STATE_FILE", str(bot.get("child_state_file", DEFAULT_CHILD_STATE_FILE))).strip() or DEFAULT_CHILD_STATE_FILE,
+            child_data_dir=os.getenv("BOT_CHILD_DATA_DIR", str(bot.get("child_data_dir", DEFAULT_CHILD_DATA_DIR))).strip() or DEFAULT_CHILD_DATA_DIR,
+            child_default_model=os.getenv("BOT_CHILD_DEFAULT_MODEL", str(bot.get("child_default_model", DEFAULT_CHILD_MODEL))).strip() or DEFAULT_CHILD_MODEL,
             history_turns=history_turns,
             runtime_defaults=runtime_defaults,
         )

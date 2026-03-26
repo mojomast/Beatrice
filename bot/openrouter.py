@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 
 import httpx
 
@@ -10,6 +11,10 @@ from .config import RuntimeConfig
 
 class OpenRouterError(RuntimeError):
     """Raised when the OpenRouter API returns an error or malformed payload."""
+
+
+class OpenRouterTimeout(OpenRouterError):
+    """Raised when OpenRouter does not return before the read timeout."""
 
 
 @dataclass(frozen=True)
@@ -55,7 +60,8 @@ class OpenRouterClient:
         runtime: RuntimeConfig,
         messages: list[dict[str, object]],
         tools: list[ToolDefinition] | None = None,
-        tool_choice: str = "auto",
+        tool_choice: str | dict[str, object] = "auto",
+        request_timeout: httpx.Timeout | float | None = None,
     ) -> ChatResponse:
         if not self.api_key:
             raise OpenRouterError("OpenRouter API key is not configured")
@@ -84,17 +90,23 @@ class OpenRouterClient:
             payload["tool_choice"] = tool_choice
 
         if runtime.stream and not tools:
-            content = await self._stream_completion(payload)
+            content = await self._stream_completion(payload, request_timeout=request_timeout)
             assistant_message = {"role": "assistant", "content": content}
             return ChatResponse(content=content, tool_calls=(), assistant_message=assistant_message)
-        return await self._single_completion(payload)
+        return await self._single_completion(payload, request_timeout=request_timeout)
 
-    async def complete(self, runtime: RuntimeConfig, user_prompt: str, messages: list[dict[str, object]] | None = None) -> str:
+    async def complete(
+        self,
+        runtime: RuntimeConfig,
+        user_prompt: str,
+        messages: list[dict[str, object]] | None = None,
+        request_timeout: httpx.Timeout | float | None = None,
+    ) -> str:
         payload_messages = messages or [
             {"role": "system", "content": runtime.system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        response = await self.chat(runtime, payload_messages)
+        response = await self.chat(runtime, payload_messages, request_timeout=request_timeout)
         return response.content
 
     def _headers(self) -> dict[str, str]:
@@ -108,8 +120,16 @@ class OpenRouterClient:
             headers["X-Title"] = self.title
         return headers
 
-    async def _single_completion(self, payload: dict) -> ChatResponse:
-        response = await self._client.post(f"{self.base_url}/chat/completions", headers=self._headers(), json=payload)
+    async def _single_completion(self, payload: dict, request_timeout: httpx.Timeout | float | None = None) -> ChatResponse:
+        try:
+            response = await self._client.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=request_timeout,
+            )
+        except httpx.ReadTimeout as exc:
+            raise OpenRouterTimeout(f"OpenRouter read timeout for model {payload.get('model')}") from exc
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -131,34 +151,38 @@ class OpenRouterClient:
             raise OpenRouterError("OpenRouter returned an empty response")
         return ChatResponse(content=text, tool_calls=tool_calls, assistant_message=message)
 
-    async def _stream_completion(self, payload: dict) -> str:
+    async def _stream_completion(self, payload: dict, request_timeout: httpx.Timeout | float | None = None) -> str:
         chunks: list[str] = []
-        async with self._client.stream(
-            "POST",
-            f"{self.base_url}/chat/completions",
-            headers=self._headers(),
-            json=payload,
-        ) as response:
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                raise OpenRouterError(self._extract_error_message(response)) from exc
+        try:
+            async with self._client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=request_timeout,
+            ) as response:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise OpenRouterError(self._extract_error_message(response)) from exc
 
-            async for raw_line in response.aiter_lines():
-                line = raw_line.strip()
-                if not line or not line.startswith("data:"):
-                    continue
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
 
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
 
-                event = json.loads(data)
-                for choice in event.get("choices", []):
-                    delta = choice.get("delta", {})
-                    piece = self._normalize_content(delta.get("content"))
-                    if piece:
-                        chunks.append(piece)
+                    event = json.loads(data)
+                    for choice in event.get("choices", []):
+                        delta = choice.get("delta", {})
+                        piece = self._normalize_content(delta.get("content"))
+                        if piece:
+                            chunks.append(piece)
+        except httpx.ReadTimeout as exc:
+            raise OpenRouterTimeout(f"OpenRouter read timeout for model {payload.get('model')}") from exc
 
         text = "".join(chunks).strip()
         if not text:
@@ -184,6 +208,16 @@ class OpenRouterClient:
     @staticmethod
     def _extract_tool_calls(message: dict[str, object]) -> tuple[ToolCall, ...]:
         raw_calls = message.get("tool_calls")
+        if isinstance(raw_calls, list):
+            return OpenRouterClient._parse_raw_tool_calls(raw_calls)
+
+        content = OpenRouterClient._normalize_content(message.get("content"))
+        if content:
+            return OpenRouterClient._extract_markup_tool_calls(content)
+        return ()
+
+    @staticmethod
+    def _parse_raw_tool_calls(raw_calls: list[object]) -> tuple[ToolCall, ...]:
         if not isinstance(raw_calls, list):
             return ()
 
@@ -216,6 +250,33 @@ class OpenRouterClient:
                     arguments=payload,
                 )
             )
+        return tuple(parsed)
+
+    @staticmethod
+    def _extract_markup_tool_calls(content: str) -> tuple[ToolCall, ...]:
+        invoke_matches = re.findall(r"<invoke\s+name=\"([^\"]+)\"[^>]*>(.*?)</invoke>", content, flags=re.DOTALL | re.IGNORECASE)
+        if not invoke_matches:
+            return ()
+        parsed: list[ToolCall] = []
+        for index, (name, body) in enumerate(invoke_matches):
+            name = name.strip()
+            if not name:
+                continue
+            arguments: dict[str, object] = {}
+            for param_name, raw_value in re.findall(
+                r"<parameter\s+name=\"([^\"]+)\"[^>]*>(.*?)</parameter>",
+                body,
+                flags=re.DOTALL | re.IGNORECASE,
+            ):
+                text = raw_value.strip()
+                if not text:
+                    arguments[param_name] = ""
+                    continue
+                try:
+                    arguments[param_name] = json.loads(text)
+                except json.JSONDecodeError:
+                    arguments[param_name] = text
+            parsed.append(ToolCall(id=f"markup_tool_call_{index}", name=name, arguments=arguments))
         return tuple(parsed)
 
     @staticmethod

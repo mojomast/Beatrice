@@ -224,6 +224,7 @@ class CommandProcessor:
         list_approvals: Callable[[], str],
         approve_action: Callable[[str, str, bool], str],
         reject_action: Callable[[str, str, bool], str],
+        child_command: Callable[[list[str], str | None, bool], list[str]] | None = None,
     ) -> None:
         self.store = store
         self.secrets = secrets
@@ -237,6 +238,7 @@ class CommandProcessor:
         self.list_approvals = list_approvals
         self.approve_action = approve_action
         self.reject_action = reject_action
+        self.child_command = child_command or (lambda _tokens, _actor, _is_private: ["child bot control unavailable"])
 
     def handle(self, tokens: list[str], actor: str | None = None, is_private: bool = False) -> list[str]:
         if not tokens:
@@ -263,6 +265,8 @@ class CommandProcessor:
             return self._handle_approve(tokens[1:], actor, is_private)
         if command == "reject":
             return self._handle_reject(tokens[1:], actor, is_private)
+        if command == "child":
+            return self.child_command(tokens[1:], actor, is_private)
         if command == "reset":
             return self._handle_reset(tokens[1:])
 
@@ -271,10 +275,10 @@ class CommandProcessor:
     def _help_lines(self) -> list[str]:
         return [
             f"Queries: '{self.prefix} ask <prompt>', '{self.bot_nick}: <prompt>', or send a private message.",
-            f"Commands: {self.prefix} help | {self.prefix} status | {self.prefix} show system | {self.prefix} show params | {self.prefix} context [status|reset] | {self.prefix} approvals",
+            f"Commands: {self.prefix} help | {self.prefix} status | {self.prefix} show system | {self.prefix} show params | {self.prefix} show models | {self.prefix} context [status|reset] | {self.prefix} approvals",
             "Private features: IRC awareness (server/channels/users/topics/nick changes), WHOIS lookups, safe web fetch, typed memories, and subject profiles.",
             "Private chat requests: ask about users/server state, fetch a public URL, remember facts/notes, recall memories, or ask what Beatrice knows about someone.",
-            "Admin commands: set system/model/temperature/top_p/max_tokens/reply_interval_seconds/stream/openrouter_key, clear openrouter_key, save runtime, approve <id>, reject <id>, context reset, and reset; append the admin password or password=<value>.",
+            "Admin commands: set system/model/temperature/top_p/max_tokens/reply_interval_seconds/stream/openrouter_key, clear openrouter_key, save runtime, approve <id>, reject <id>, context reset, reset, and child list/create/start/stop/enable/disable/remove; append the admin password or password=<value>.",
             "Dangerous autonomous actions never self-apply: they create approval IDs, and an admin must approve them in a private message with approve/reject.",
         ]
 
@@ -287,7 +291,7 @@ class CommandProcessor:
 
     def _handle_show(self, tokens: list[str]) -> list[str]:
         if not tokens:
-            return [f"usage: {self.prefix} show <system|params>"]
+            return [f"usage: {self.prefix} show <system|params|models>"]
 
         current = self.store.current()
         subject = tokens[0].lower()
@@ -295,7 +299,12 @@ class CommandProcessor:
             return [f"system={current.system_excerpt(350)}"]
         if subject == "params":
             return [f"{current.params_summary()} openrouter_key={self.secrets.openrouter_status()}"]
-        return [f"unknown show target '{subject}'. Use system or params."]
+        if subject == "models":
+            routes = current.models.to_mapping()
+            return [
+                f"models default={current.model} chat={routes['chat'] or current.model} research={routes['research'] or current.model} code={routes['code'] or current.model}"
+            ]
+        return [f"unknown show target '{subject}'. Use system, params, or models."]
 
     def _handle_context(self, tokens: list[str]) -> list[str]:
         if not tokens or tokens[0].lower() == "status":

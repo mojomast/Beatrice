@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock
 
-from bot.irc import IRCClient, NickChange
+from bot.irc import IRCClient, NickChange, fit_message_bytes
 
 
 class IRCClientTests(unittest.IsolatedAsyncioTestCase):
@@ -156,3 +156,9 @@ class IRCClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.joined_channels(), ())
         self.assertEqual(self.client.known_channels(), ())
         self.assertIsNone(self.client.channel_topic("#ussycode"))
+
+    def test_fit_message_bytes_preserves_valid_utf8_boundaries(self) -> None:
+        text = "hello cafe \N{SNOWMAN}"
+        fitted = fit_message_bytes(text, len("hello cafe ".encode("utf-8")) + 1)
+
+        self.assertEqual(fitted, "hello cafe ")

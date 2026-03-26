@@ -67,6 +67,148 @@ class AuditLoggerTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"], "disk full")
 
+    def test_request_trace_events_capture_safe_structured_summaries(self) -> None:
+        self.logger.log_request_start(
+            request_id="req123",
+            nick="alice",
+            target="#ussycode",
+            is_private=False,
+            prompt="search for current deploy docs",
+            github_scope="octo/repo",
+            domain_hint="example.com",
+            preferred_direct_url="https://user:pass@example.com/docs?q=secret#frag",
+            requires_web_lookup=True,
+        )
+        self.logger.log_request_tool_call(
+            request_id="req123",
+            tool_name="web_fetch",
+            tool_call_id="call_1",
+            category="web",
+            round_index=1,
+            arguments={
+                "url": "https://user:pass@example.com/docs?q=secret#frag",
+                "authorization": "Bearer super-secret",
+                "query": "deploy token rollout",
+                "limit": 3,
+                "nested": {"api_key": "abc123", "path": "docs/index.md"},
+            },
+        )
+        self.logger.log_request_tool_result(
+            request_id="req123",
+            tool_name="web_fetch",
+            tool_call_id="call_1",
+            category="web",
+            round_index=1,
+            ok=True,
+            approval_required=False,
+            duration_ms=42,
+            result={
+                "url": "https://user:pass@example.com/docs?q=secret#frag",
+                "content": "top secret page contents",
+                "headers": {"authorization": "Bearer nope"},
+            },
+        )
+        self.logger.log_request_finish(
+            request_id="req123",
+            outcome="answered",
+            rounds=1,
+            tools_used=1,
+            tool_names=["web_fetch"],
+            response="Here is the deploy documentation.",
+        )
+
+        lines = self.log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([json.loads(line)["event"] for line in lines], [
+            "request_start",
+            "request_tool_call",
+            "request_tool_result",
+            "request_finish",
+        ])
+
+        start_payload = json.loads(lines[0])
+        self.assertEqual(start_payload["prompt_len"], len("search for current deploy docs"))
+        self.assertEqual(start_payload["preferred_direct_url"], "https://example.com/docs")
+        self.assertNotIn("prompt", start_payload)
+
+        call_payload = json.loads(lines[1])
+        self.assertEqual(call_payload["arguments_summary"]["url"], "https://example.com/docs")
+        self.assertEqual(call_payload["arguments_summary"]["authorization"], "<redacted>")
+        self.assertEqual(call_payload["arguments_summary"]["query"], {"type": "text", "length": 20})
+        self.assertEqual(call_payload["arguments_summary"]["nested"]["api_key"], "<redacted>")
+        self.assertEqual(call_payload["arguments_summary"]["nested"]["path"], "docs/index.md")
+        self.assertNotIn("super-secret", lines[1])
+
+        result_payload = json.loads(lines[2])
+        self.assertEqual(result_payload["result_summary"]["url"], "https://example.com/docs")
+        self.assertEqual(result_payload["result_summary"]["content"], {"type": "text", "length": 24})
+        self.assertEqual(result_payload["result_summary"]["headers"]["authorization"], "<redacted>")
+
+        finish_payload = json.loads(lines[3])
+        self.assertEqual(finish_payload["tool_names"], ["web_fetch"])
+        self.assertEqual(finish_payload["response_len"], len("Here is the deploy documentation."))
+        self.assertNotIn("response", finish_payload)
+
+    def test_request_trace_records_safe_result_payloads(self) -> None:
+        self.logger.log_request_tool_result(
+            request_id="req200",
+            tool_name="github_get_repository",
+            ok=True,
+            result={
+                "full_name": "mojomast/ussynet",
+                "html_url": "https://github.com/mojomast/ussynet?tab=readme#top",
+                "description": "repo details",
+            },
+        )
+
+        payload = json.loads(self.log_path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(payload["result_summary"]["html_url"], {"type": "text", "length": 50})
+        self.assertEqual(payload["result_summary"]["full_name"], {"type": "text", "length": 16})
+
+    def test_child_bot_event_logs_safe_fields(self) -> None:
+        self.logger.log_child_bot_event(
+            child_id="helper",
+            action="start",
+            status="running",
+            nick="HelperBot",
+            channels=["#ussycode"],
+            model="google/gemini-2.5-flash-lite",
+            pid=1234,
+        )
+
+        payload = json.loads(self.log_path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(payload["event"], "child_bot_event")
+        self.assertEqual(payload["child_id"], "helper")
+        self.assertEqual(payload["action"], "start")
+        self.assertEqual(payload["channels"], ["#ussycode"])
+
+    def test_request_trace_error_summary_redacts_secrets(self) -> None:
+        self.logger.log_request_tool_result(
+            request_id="req999",
+            tool_name="persist_runtime_config",
+            ok=False,
+            error={
+                "message": "could not persist config",
+                "openrouter_key": "sk-live-secret",
+                "details": ["token leaked", {"password": "hunter2"}],
+            },
+        )
+
+        payload = json.loads(self.log_path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(payload["error_summary"]["openrouter_key"], "<redacted>")
+        self.assertEqual(payload["error_summary"]["message"], {"type": "text", "length": 24})
+        self.assertEqual(
+            payload["error_summary"]["details"],
+            {
+                "type": "list",
+                "length": 2,
+                "items": [
+                    {"type": "text", "length": 12},
+                    {"password": "<redacted>"},
+                ],
+            },
+        )
+        self.assertNotIn("sk-live-secret", self.log_path.read_text(encoding="utf-8"))
+
     def test_blank_required_fields_raise_value_error(self) -> None:
         with self.assertRaises(ValueError):
             self.logger.log_approval_request(
@@ -75,6 +217,15 @@ class AuditLoggerTests(unittest.TestCase):
                 arguments={},
                 requested_by="alice",
                 requested_in="#ussycode",
+            )
+
+        with self.assertRaises(ValueError):
+            self.logger.log_request_start(
+                request_id="req123",
+                nick="alice",
+                target="#ussycode",
+                is_private=False,
+                prompt="   ",
             )
 
     def test_raises_when_parent_path_is_not_directory(self) -> None:

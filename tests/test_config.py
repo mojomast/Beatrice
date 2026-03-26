@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from bot.config import BotSettings, RuntimeDefaults, RuntimeStore, SecretStore, default_irc_user, parse_channels, parse_csv_values
+from bot.config import BotSettings, ModelRoutes, RuntimeConfig, RuntimeDefaults, RuntimeStore, SecretStore, default_irc_user, parse_channels, parse_csv_values
 
 
 class ConfigTests(unittest.TestCase):
@@ -18,6 +18,12 @@ class ConfigTests(unittest.TestCase):
 
     def test_parse_csv_values_splits_commas(self) -> None:
         self.assertEqual(parse_csv_values('alice, bob ,carol'), ('alice', 'bob', 'carol'))
+
+    def test_model_routes_resolve_with_fallback(self) -> None:
+        routes = ModelRoutes(chat=None, research='google/gemini-2.5-flash-lite', code='qwen/qwen3-coder-30b-a3b-instruct')
+
+        self.assertEqual(routes.resolve('chat', 'deepseek/deepseek-v3.2'), 'deepseek/deepseek-v3.2')
+        self.assertEqual(routes.resolve('research', 'deepseek/deepseek-v3.2'), 'google/gemini-2.5-flash-lite')
 
     def test_default_irc_user_sanitizes_nick(self) -> None:
         self.assertEqual(default_irc_user('Bea!trice'), 'beatrice')
@@ -136,11 +142,39 @@ class ConfigTests(unittest.TestCase):
         self.assertIn('"temperature": 1.5', payload)
         self.assertIn('"stream": true', payload)
 
+    def test_runtime_config_routes_model_per_request_type(self) -> None:
+        defaults = RuntimeDefaults(
+            model='deepseek/deepseek-v3.2',
+            models=ModelRoutes(research='google/gemini-2.5-flash-lite', code='qwen/qwen3-coder-30b-a3b-instruct'),
+        )
+        config = RuntimeStore(defaults).snapshot()
+
+        self.assertEqual(config.for_route('chat').model, 'deepseek/deepseek-v3.2')
+        self.assertEqual(config.for_route('research').model, 'google/gemini-2.5-flash-lite')
+        self.assertEqual(config.for_route('code').model, 'qwen/qwen3-coder-30b-a3b-instruct')
+
+    def test_runtime_config_to_mapping_includes_model_routes(self) -> None:
+        config = RuntimeConfig.from_defaults(
+            RuntimeDefaults(
+                model='deepseek/deepseek-v3.2',
+                models=ModelRoutes(research='google/gemini-2.5-flash-lite', code='qwen/qwen3-coder-30b-a3b-instruct'),
+            )
+        )
+
+        payload = config.to_mapping()
+
+        self.assertEqual(payload['models']['research'], 'google/gemini-2.5-flash-lite')
+        self.assertEqual(payload['models']['code'], 'qwen/qwen3-coder-30b-a3b-instruct')
+
     def test_settings_load_runtime_and_memory_paths(self) -> None:
         env = {
             'BOT_RUNTIME_FILE': 'state/runtime.json',
             'BOT_MEMORY_DB_FILE': 'state/memory.sqlite3',
             'BOT_AUDIT_LOG_FILE': 'state/audit.jsonl',
+            'BOT_CHILD_BOTS_FILE': 'state/children.json',
+            'BOT_CHILD_STATE_FILE': 'state/children-state.json',
+            'BOT_CHILD_DATA_DIR': 'state/children',
+            'BOT_CHILD_DEFAULT_MODEL': 'google/gemini-2.5-flash-lite',
             'BOT_ADMIN_NICKS': 'alice,bob',
             'BOT_APPROVAL_TIMEOUT_SECONDS': '1200',
         }
@@ -150,5 +184,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.runtime_file, 'state/runtime.json')
         self.assertEqual(settings.memory_db_file, 'state/memory.sqlite3')
         self.assertEqual(settings.audit_log_file, 'state/audit.jsonl')
+        self.assertEqual(settings.child_bots_file, 'state/children.json')
+        self.assertEqual(settings.child_state_file, 'state/children-state.json')
+        self.assertEqual(settings.child_data_dir, 'state/children')
+        self.assertEqual(settings.child_default_model, 'google/gemini-2.5-flash-lite')
         self.assertEqual(settings.admin_nicks, ('alice', 'bob'))
         self.assertEqual(settings.approval_timeout_seconds, 1200.0)
+
+    def test_settings_json_can_define_admin_nicks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = os.path.join(temp_dir, 'settings.json')
+            with open(settings_path, 'w', encoding='utf-8') as handle:
+                handle.write('{"bot": {"admin_nicks": ["mojo"]}}')
+
+            with patch.dict(os.environ, {'BOT_SETTINGS_FILE': settings_path}, clear=True):
+                settings = BotSettings.from_env()
+
+        self.assertEqual(settings.admin_nicks, ('mojo',))

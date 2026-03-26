@@ -149,6 +149,100 @@ class WebFetcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(success.endswith("ok"))
         self.assertEqual(failure, "Web fetch failed: localhost URLs are not allowed")
 
+    async def test_fetch_text_rejects_github_hosts(self) -> None:
+        fetcher = self._make_fetcher(self._ok_handler)
+        self.addAsyncCleanup(fetcher.aclose)
+
+        with self.assertRaisesRegex(WebFetchError, r"github_\* tools"):
+            await fetcher.fetch_text("https://api.github.com/repos/mojomast/ussynet")
+
+    async def test_search_returns_public_results(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/html; charset=utf-8"},
+                content=(
+                    b'<html><body>'
+                    b'<a class="result__a" href="https://example.com/story">Example Story</a>'
+                    b'</body></html>'
+                ),
+                request=request,
+            )
+
+        fetcher = self._make_fetcher(handler)
+        self.addAsyncCleanup(fetcher.aclose)
+
+        results = await fetcher.search("current events", limit=3)
+
+        self.assertEqual(results, [{"title": "Example Story", "url": "https://example.com/story", "snippet": ""}])
+
+    async def test_search_parses_snippets_and_redirect_wrapped_urls(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/html; charset=utf-8"},
+                content=(
+                    b'<html><body>'
+                    b'<div class="result"><a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fstory">Example Story</a>'
+                    b'<div class="result__snippet">Fresh news here</div></div></body></html>'
+                ),
+                request=request,
+            )
+
+        fetcher = self._make_fetcher(handler)
+        self.addAsyncCleanup(fetcher.aclose)
+
+        results = await fetcher.search("current events", limit=3)
+
+        self.assertEqual(results, [{"title": "Example Story", "url": "https://example.com/story", "snippet": "Fresh news here"}])
+
+    async def test_search_falls_back_to_bing_rss_when_html_search_has_no_results(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if 'bing.com' in str(request.url):
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "application/xml; charset=utf-8"},
+                    content=(
+                        b'<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel>'
+                        b'<item><title>Example Story</title><link>https://example.com/story</link><description>Fresh news here</description></item>'
+                        b'</channel></rss>'
+                    ),
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/html; charset=utf-8"},
+                content=b'<html><body>No results</body></html>',
+                request=request,
+            )
+
+        fetcher = self._make_fetcher(handler)
+        self.addAsyncCleanup(fetcher.aclose)
+
+        results = await fetcher.search("current events", limit=3)
+
+        self.assertEqual(results, [{"title": "Example Story", "url": "https://example.com/story", "snippet": "Fresh news here"}])
+
+    async def test_search_accepts_text_xml_bing_rss(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/xml; charset=utf-8"},
+                content=(
+                    b'<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel>'
+                    b'<item><title>Example Story</title><link>https://example.com/story</link><description>Fresh news here</description></item>'
+                    b'</channel></rss>'
+                ),
+                request=request,
+            )
+
+        fetcher = self._make_fetcher(handler)
+        self.addAsyncCleanup(fetcher.aclose)
+
+        results = await fetcher._search_bing_rss('current events', 3)
+
+        self.assertEqual(results, [{"title": "Example Story", "url": "https://example.com/story", "snippet": "Fresh news here"}])
+
     def _make_fetcher(
         self,
         handler,

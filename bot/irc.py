@@ -103,6 +103,22 @@ def split_message(message: str, limit: int = DEFAULT_MESSAGE_LENGTH) -> list[str
     return chunks
 
 
+def fit_message_bytes(message: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    encoded = message.encode("utf-8")
+    if len(encoded) <= limit:
+        return message
+
+    trimmed = encoded[:limit]
+    while trimmed:
+        try:
+            return trimmed.decode("utf-8")
+        except UnicodeDecodeError:
+            trimmed = trimmed[:-1]
+    return ""
+
+
 class IRCClient:
     def __init__(
         self,
@@ -290,7 +306,14 @@ class IRCClient:
 
         encoded = line.encode("utf-8")
         if len(encoded) > self.max_line_bytes - 2:
-            encoded = encoded[: self.max_line_bytes - 2]
+            if " :" in line:
+                prefix, trailing = line.split(" :", 1)
+                prefix_bytes = len((prefix + " :").encode("utf-8"))
+                trailing_limit = max(0, self.max_line_bytes - 2 - prefix_bytes)
+                line = prefix + " :" + fit_message_bytes(trailing, trailing_limit)
+                encoded = line.encode("utf-8")
+            else:
+                encoded = encoded[: self.max_line_bytes - 2]
 
         async with self._send_lock:
             now = time.monotonic()

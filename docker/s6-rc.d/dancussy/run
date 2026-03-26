@@ -1,0 +1,4 @@
+#!/bin/sh
+exec 2>&1
+echo "Starting ussynet services bot..."
+exec python3 -m services.bot --config /app/services/config.docker.json

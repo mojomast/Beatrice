@@ -1,0 +1,4 @@
+#!/bin/sh
+exec 2>&1
+echo "Starting InspIRCd..."
+exec s6-setuidgid inspircd /opt/inspircd/bin/inspircd --nofork --nolog --nopid --config /opt/inspircd/conf/inspircd.conf

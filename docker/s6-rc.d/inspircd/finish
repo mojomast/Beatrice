@@ -1,0 +1,8 @@
+#!/bin/sh
+# If InspIRCd exits unexpectedly, bring down the whole container.
+# Exit code 0 = clean shutdown (docker stop), don't interfere.
+if [ "$1" -ne 0 ] && [ "$1" -ne 256 ]; then
+    echo "InspIRCd exited with code $1 — stopping container" >&2
+    echo "$1" > /run/s6-linux-init-container-results/exitcode
+    /run/s6/basedir/bin/halt
+fi

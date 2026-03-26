@@ -1,0 +1,35 @@
+{
+    "server": {
+        "host": "localhost",
+        "port": 6667,
+        "use_ssl": false
+    },
+    "bot": {
+        "nick": "ussynet",
+        "ident": "services",
+        "realname": "ussynet Channel Services (Dancer heritage)",
+        "oper_name": "ussynet",
+        "oper_password": "changeme_services_2026"
+    },
+    "backup": {
+        "nick": "ussynet2",
+        "ident": "services",
+        "realname": "ussynet2 Backup Channel Services",
+        "oper_name": "ussynet2",
+        "oper_password": "changeme_backup_2026"
+    },
+    "database": {
+        "path": "ussynet.db"
+    },
+    "network": {
+        "name": "ussynet"
+    },
+    "services": {
+        "admin_hostmasks": [
+            "*!*@127.0.0.*",
+            "*!*@localhost"
+        ],
+        "default_channel": "#lobby",
+        "log_channel": "#services-log"
+    }
+}

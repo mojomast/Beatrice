@@ -1,0 +1,9 @@
+services:
+  beatrice:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: beatrice
+    restart: unless-stopped
+    env_file:
+      - .env

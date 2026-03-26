@@ -1,0 +1,20 @@
+#!/bin/sh
+# Wait until InspIRCd is accepting TCP connections on port 6667.
+# Retries every second for up to 30 seconds.
+
+echo "Waiting for InspIRCd to accept connections on port 6667..."
+
+attempts=0
+max_attempts=30
+
+while [ $attempts -lt $max_attempts ]; do
+    if nc -z 127.0.0.1 6667 2>/dev/null; then
+        echo "InspIRCd is ready (took ${attempts}s)"
+        exit 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+done
+
+echo "ERROR: InspIRCd failed to become ready after ${max_attempts}s" >&2
+exit 1

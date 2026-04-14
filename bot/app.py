@@ -1546,8 +1546,24 @@ class BeatriceBot:
                 "take offline",
                 "create bot",
                 "create bots",
+                "make a bot",
+                "make me a bot",
+                "make me bot",
+                "make bot",
+                "make bots",
                 "make 5",
                 "make five",
+                "spawn a bot",
+                "spawn bot",
+                "new bot",
+                "add a bot",
+                "add bot",
+                "start a bot",
+                "launch a bot",
+                "bot for",
+                "bot that",
+                "bot which",
+                "bot who",
             )
         )
 
@@ -2599,6 +2615,33 @@ class BeatriceBot:
         arguments: dict[str, object],
         context: MessageContext,
     ) -> dict[str, object]:
+        # Auto-approve if the request comes from an admin identity
+        if self._is_admin_identity(context.nick):
+            approval_id = secrets.token_hex(4)
+            approval = PendingApproval(
+                id=approval_id,
+                tool_name=tool_name,
+                arguments=dict(arguments),
+                requested_by=context.nick,
+                requested_in=context.reply_target,
+                created_at=time.time(),
+                expires_at=time.time() + self.settings.approval_timeout_seconds,
+                summary=self._approval_summary(tool_name, arguments),
+            )
+            self.audit.log_approval(
+                approval_id=approval.id,
+                actor=context.nick,
+                tool_name=approval.tool_name,
+                summary=approval.summary,
+            )
+            result = self._execute_approved_privileged_call(approval)
+            return {
+                "ok": True,
+                "auto_approved": True,
+                "approval_id": approval.id,
+                "summary": approval.summary,
+                "result": result,
+            }
         async with self._approval_lock:
             self._prune_expired_approvals()
             approval_id = secrets.token_hex(4)

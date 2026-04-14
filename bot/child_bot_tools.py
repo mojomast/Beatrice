@@ -71,6 +71,22 @@ def normalize_child_id(value: str) -> str:
     return cleaned[:40]
 
 
+def _derive_child_id_from_nick_or_purpose(nick: str | None, purpose: str | None) -> str:
+    """Auto-derive a child_id from nick or purpose when the LLM omits child_id."""
+    if nick and nick.strip():
+        candidate = normalize_child_id(nick.strip())
+        if candidate:
+            return candidate
+    if purpose and purpose.strip():
+        words = purpose.strip().split()
+        candidate_text = "-".join(words[:2])
+        candidate = normalize_child_id(candidate_text)
+        if candidate:
+            return candidate
+    import time
+    return normalize_child_id(f"bot-{int(time.time())}")
+
+
 def normalize_nick(value: str) -> str:
     cleaned = SAFE_NICK_RE.sub("", value.strip())
     if not cleaned:
@@ -159,7 +175,10 @@ def expand_child_bot_operations(arguments: dict[str, object], default_model: str
         if action == "create":
             plans.extend(_expand_create_operation(raw, default_model))
             continue
-        child_id = normalize_child_id(str(raw.get("child_id", "")).strip())
+        child_id_raw = str(raw.get("child_id", "")).strip()
+        if not child_id_raw:
+            raise ValueError(f"child_id is required for {action} actions")
+        child_id = normalize_child_id(child_id_raw)
         plans.append(ConcreteChildPlan(action=action, child_id=child_id))
     return plans
 
@@ -196,7 +215,7 @@ def _expand_create_operation(raw: dict[str, object], default_model: str) -> list
     id_prefix = str(raw.get("id_prefix", child_id_value)).strip()
     nick_prefix = str(raw.get("nick_prefix", nick_value or id_prefix)).strip()
     if count == 1:
-        child_id = normalize_child_id(child_id_value or id_prefix)
+        child_id = normalize_child_id(child_id_value or id_prefix) if (child_id_value or id_prefix) else _derive_child_id_from_nick_or_purpose(nick_value, purpose)
         nick = normalize_nick(nick_value or nick_prefix or child_id)
         prompt, variation = render_child_system_prompt(
             nick=nick,

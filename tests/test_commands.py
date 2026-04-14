@@ -592,39 +592,47 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
         from bot.app import BeatriceBot, MessageContext
         from bot.config import BotSettings
 
-        bot = BeatriceBot(BotSettings(openrouter_api_key='sk-test', admin_nicks=('mojo',)))
-        context = MessageContext(nick='mojo', target='Beatrice', is_private=True)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bot = BeatriceBot(BotSettings(
+                openrouter_api_key='***',
+                admin_nicks=('mojo',),
+                child_bots_file=str(Path(temp_dir) / 'children.json'),
+                child_state_file=str(Path(temp_dir) / 'children-state.json'),
+                child_data_dir=str(Path(temp_dir) / 'children'),
+            ))
+            context = MessageContext(nick='mojo', target='Beatrice', is_private=True)
 
-        queued = await bot._execute_tool_call(
-            SimpleNamespace(
-                name='request_child_bot_changes',
-                arguments={
-                    'operations': [
-                        {
-                            'action': 'create',
-                            'count': 5,
-                            'id_prefix': 'helper',
-                            'nick_prefix': 'HelperBot',
-                            'channels': ['#ussycode'],
-                            'purpose': 'Helpful helper chatbots for channel banter and quick guidance.',
-                            'persona': 'same purpose, slightly different vibes',
-                            'response_mode': 'ambient',
-                            'start_after_create': False,
-                        }
-                    ]
-                },
-            ),
-            context,
-        )
+            queued = await bot._execute_tool_call(
+                SimpleNamespace(
+                    name='request_child_bot_changes',
+                    arguments={
+                        'operations': [
+                            {
+                                'action': 'create',
+                                'count': 5,
+                                'id_prefix': 'helper',
+                                'nick_prefix': 'HelperBot',
+                                'channels': ['#ussycode'],
+                                'purpose': 'Helpful helper chatbots for channel banter and quick guidance.',
+                                'persona': 'same purpose, slightly different vibes',
+                                'response_mode': 'ambient',
+                                'start_after_create': False,
+                            }
+                        ]
+                    },
+                ),
+                context,
+            )
 
-        self.assertTrue(queued['approval_required'])
-        pending = next(iter(bot._pending_approvals.values()))
-        operations = pending.arguments['operations']
-        self.assertEqual(len(operations), 5)
-        prompts = {operation['system_prompt'] for operation in operations}
-        self.assertEqual(len(prompts), 5)
-        self.assertTrue(all(operation['response_mode'] == 'ambient' for operation in operations))
-        self.assertIn('create=5', pending.summary)
+            # Admin mojo gets auto-approved — children created immediately
+            self.assertTrue(queued['ok'])
+            self.assertTrue(queued['auto_approved'])
+            specs = bot.child_manager.list_specs()
+            self.assertEqual(len(specs), 5)
+            prompts = {spec.system_prompt for spec in specs}
+            self.assertEqual(len(prompts), 5)
+            self.assertTrue(all(spec.response_mode == 'ambient' for spec in specs))
+            self.assertIn('create=5', queued['summary'])
 
     async def test_markup_tool_response_retries_instead_of_leaking(self) -> None:
         from bot.app import BeatriceBot, MessageContext
@@ -657,7 +665,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = BotSettings(
-                openrouter_api_key='sk-test',
+                openrouter_api_key='***',
                 admin_nicks=('mojo',),
                 child_bots_file=str(Path(temp_dir) / 'children.json'),
                 child_state_file=str(Path(temp_dir) / 'children-state.json'),
@@ -673,7 +681,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
 
             bot.child_manager.start_child = fake_start
 
-            queued = await bot._execute_tool_call(
+            result = await bot._execute_tool_call(
                 SimpleNamespace(
                     name='request_child_bot_changes',
                     arguments={
@@ -694,10 +702,11 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 context,
             )
 
-            approved = bot.commands.handle(['approve', queued['approval_id'], 'beans'], actor='mojo', is_private=True)
+            # Admin mojo gets auto-approved — children are created immediately
+            self.assertTrue(result['ok'])
+            self.assertTrue(result['auto_approved'])
             await asyncio.sleep(0)
 
-            self.assertIn('approved', approved[0])
             specs = bot.child_manager.list_specs()
             self.assertEqual(len(specs), 5)
             self.assertEqual(len({spec.system_prompt for spec in specs}), 5)

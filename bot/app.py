@@ -552,6 +552,14 @@ class BeatriceBot:
             LOGGER.info("Joining %s", channel)
             await self.irc.join(channel)
 
+    def _known_bot_nicks(self) -> set[str]:
+        """Nicks of bots whose messages should not trigger replies or count as human activity."""
+        nicks = {self.irc.nick.lower()} if self.irc.nick else set()
+        if hasattr(self, "child_manager") and self.child_manager is not None:
+            for spec in self.child_manager.list_specs():
+                nicks.add(spec.nick.lower())
+        return nicks
+
     async def _on_privmsg(self, nick: str, _prefix: str, target: str, message: str) -> None:
         if not nick or nick.lower() == self.irc.nick.lower():
             return
@@ -561,6 +569,8 @@ class BeatriceBot:
             target=target,
             is_private=target.lower() == self.irc.nick.lower(),
         )
+
+        is_known_bot = nick.lower() in self._known_bot_nicks()
 
         if self._is_admin_identity(context.nick):
             preview = " ".join(message.split())[:200]
@@ -577,8 +587,12 @@ class BeatriceBot:
         await self._auto_update_profile_from_message(context.history_scope, context.nick, message)
 
         if not context.is_private:
-            self._note_public_message(context.target)
+            if not is_known_bot:
+                self._note_public_message(context.target)
             self._record_channel_activity(context.target, context.nick, message)
+
+        if is_known_bot:
+            return
 
         tokens, error = tokenize_control_command(message, self.settings.command_prefix)
         if error is not None:

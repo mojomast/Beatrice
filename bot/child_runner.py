@@ -36,6 +36,14 @@ class ManagedChildBot(BeatriceBot):
         await self.irc.disconnect(quit_message=f"{self.settings.irc_nick} signing off")
         await self.openrouter.aclose()
 
+    def _known_bot_nicks(self) -> set[str]:
+        """Read known bot nicks from env var set by parent bot."""
+        raw = os.getenv("BOT_KNOWN_BOT_NICKS", "")
+        nicks = {n.strip().lower() for n in raw.split(",") if n.strip()}
+        if self.irc.nick:
+            nicks.add(self.irc.nick.lower())
+        return nicks
+
     def _classify_request(self, context, prompt: str, github_scope):
         return RequestRoute(model_route="chat", use_tools=False, reason="child_chat_only")
 

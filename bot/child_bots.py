@@ -489,6 +489,11 @@ class ChildBotManager:
                 "BOT_CHILD_MAX_TOKENS": str(spec.max_tokens),
                 "BOT_CHILD_REPLY_INTERVAL_SECONDS": str(spec.reply_interval_seconds),
                 "BOT_CHILD_RESPONSE_MODE": spec.response_mode,
+                "BOT_KNOWN_BOT_NICKS": ",".join(
+                    n.lower()
+                    for n in [self.settings.irc_nick] + [c.nick for c in self._children.values()]
+                    if n
+                ),
             }
         )
         return env

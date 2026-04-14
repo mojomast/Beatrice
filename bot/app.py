@@ -927,6 +927,8 @@ class BeatriceBot:
         compact = sanitize_model_reply(compact, self.irc.nick, None if context.is_private else context.nick)
         # Sanitize output — block credential leaks and protocol injection
         compact = sanitize_bot_output(compact, admin_password=self.settings.admin_password)
+        # Strip structural isolation tags so they never leak to IRC
+        compact = self._strip_isolation_tags(compact)
         if not compact:
             return []
         if context.is_private and forced_target is None:

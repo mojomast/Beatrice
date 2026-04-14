@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pytest
 
 from bot.input_sanitizer import (
@@ -480,3 +481,41 @@ class TestEndToEndFlow:
         # The wrapped version should NOT contain the injection text
         wrapped = wrap_irc_message("sneaky", result.text)
         assert "ignore" not in wrapped or "REDACTED" in wrapped
+
+
+# ─── Output isolation tag stripping ─────────────────────────────────────────
+
+class TestOutputTagStripping:
+    """Verify _strip_isolation_tags removes structural tags from bot output."""
+
+    @staticmethod
+    def _strip(text):
+        """Import and call the app module's _strip_isolation_tags."""
+        import importlib, sys
+        # Ensure bot package is importable
+        if os.path.dirname(os.path.join(os.path.dirname(__file__), '..')) not in sys.path:
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+        from bot.app import BeatriceBot
+        return BeatriceBot._strip_isolation_tags(text)
+
+    def test_irc_message_tags_stripped(self):
+        text = '<irc_message nick="goonbot">mojo, I like to goon!</irc_message>'
+        assert self._strip(text) == "mojo, I like to goon!"
+
+    def test_external_content_tags_stripped(self):
+        text = '<external_content source="web" trust="untrusted">some data</external_content>'
+        assert self._strip(text) == "some data"
+
+    def test_mixed_tags_stripped(self):
+        text = '<irc_message nick="x">hello</irc_message> and <external_content source="y">data</external_content>'
+        assert self._strip(text) == "hello and data"
+
+    def test_no_tags_unchanged(self):
+        text = "just a normal response with no tags"
+        assert self._strip(text) == text
+
+    def test_nested_tags_stripped(self):
+        text = '<irc_message nick="goonbot"><irc_message from="goonbot" to="#ussycode"> inner </irc_message></irc_message>'
+        result = self._strip(text)
+        assert "<irc_message" not in result
+        assert "inner" in result

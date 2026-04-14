@@ -547,7 +547,7 @@ class BeatriceBot:
             LOGGER.info("Connected with no IRC_CHANNEL configured; waiting for private messages")
             return
 
-        LOGGER.info("Ambient channel replies are disabled by default; mention Beatrice or opt in with a private request")
+        LOGGER.info("Ambient channel replies are disabled by default; mention %s or opt in with a private request", self.irc.nick)
         for channel in self.settings.irc_channels:
             LOGGER.info("Joining %s", channel)
             await self.irc.join(channel)
@@ -613,7 +613,7 @@ class BeatriceBot:
         channel_chat = extract_channel_chat_request(message, context.is_private)
         if channel_chat is not None:
             self._chat_channels.add(channel_chat.lower())
-            await self._send_direct_message(channel_chat, "Hello everyone! I'm Beatrice - talk to me here and I'll answer.")
+            await self._send_direct_message(channel_chat, f"Hello everyone! I'm {self.irc.nick} - talk to me here and I'll answer.")
             return
 
         channel_request = extract_channel_request(message, context.is_private)

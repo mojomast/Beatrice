@@ -225,7 +225,9 @@ class IRCClient:
         await self.send_raw(f"NICK {self._desired_nick}")
         await self.send_raw(f"USER {self.user} 0 * :{self.realname}")
 
-    async def disconnect(self, quit_message: str = "Beatrice signing off") -> None:
+    async def disconnect(self, quit_message: str | None = None) -> None:
+        if quit_message is None:
+            quit_message = f"{self.nick} signing off"
         self._shutdown = True
         self._fail_pending_whois("disconnected")
         if self._writer is not None and not self._writer.is_closing():

@@ -31,6 +31,14 @@ from .irc import IRCClient
 from .memory_store import MemoryStore
 from .openrouter import OpenRouterClient, OpenRouterError, OpenRouterTimeout, ToolCall, ToolDefinition
 from .profile_tools import IRCActivity, build_channel_prompt_context, build_user_profile_fragment, extract_profile_facts
+from .input_sanitizer import (
+    INJECTION_DEFENSE_PROMPT,
+    sanitize_irc_input,
+    sanitize_bot_output,
+    sanitize_tool_result,
+    wrap_irc_message,
+    wrap_external_content,
+)
 from .web import WebFetcher, WebFetchError
 
 
@@ -917,6 +925,8 @@ class BeatriceBot:
     def _response_lines(self, response: str, context: MessageContext, forced_target: str | None) -> list[str]:
         compact = collapse_response_text(response)
         compact = sanitize_model_reply(compact, self.irc.nick, None if context.is_private else context.nick)
+        # Sanitize output — block credential leaks and protocol injection
+        compact = sanitize_bot_output(compact, admin_password=self.settings.admin_password)
         if not compact:
             return []
         if context.is_private and forced_target is None:
@@ -1164,7 +1174,15 @@ class BeatriceBot:
         return self._history_summaries.get(scope.lower(), "")
 
     def _format_user_turn(self, context: MessageContext, text: str) -> str:
-        return f"{context.nick}: {text.strip()}"
+        result = sanitize_irc_input(text, nick=context.nick)
+        if result.was_redacted:
+            LOGGER.warning(
+                "Injection attempt redacted nick=%s patterns=%s original=%r",
+                context.nick,
+                ",".join(result.detected_patterns),
+                text[:200],
+            )
+        return wrap_irc_message(context.nick, result.text)
 
     def _format_assistant_turn(self, text: str) -> str:
         return text.strip()
@@ -1179,6 +1197,7 @@ class BeatriceBot:
         messages = [
             {"role": "system", "content": self._behavior_prompt_for(context)},
             {"role": "system", "content": system_prompt},
+            {"role": "system", "content": INJECTION_DEFENSE_PROMPT},
             {"role": "system", "content": self._environment_prompt(context)},
         ]
         private_profile = self._private_profile_prompt(context)
@@ -1876,11 +1895,22 @@ class BeatriceBot:
                     else:
                         progress.failed_signatures.add(signature)
                         progress.consecutive_failures += 1
+                # Sanitize external content in tool results before adding to context
+                tool_content = json.dumps(payload, ensure_ascii=True)
+                if call.name in {"web_fetch", "web_search",
+                                 "github_search_owner_repositories", "github_list_owner_repositories",
+                                 "github_get_repository", "github_read_repository_readme",
+                                 "github_read_repository_file", "github_list_repository_directory"}:
+                    tool_content = wrap_external_content(
+                        sanitize_tool_result(tool_content, source="tool", trust="untrusted"),
+                        source=call.name,
+                        trust="untrusted",
+                    )
                 tool_messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": call.id,
-                        "content": json.dumps(payload, ensure_ascii=True),
+                        "content": tool_content,
                     }
                 )
 
@@ -2510,12 +2540,24 @@ class BeatriceBot:
             if repo.casefold() != scope.repo.casefold():
                 raise GitHubError(f"GitHub repo must stay within {scope.repo}")
 
+    @staticmethod
+    def _strip_isolation_tags(text: str) -> str:
+        """Remove <irc_message> and <external_content> structural isolation wrappers."""
+        import re as _re
+        text = _re.sub(r'<irc_message[^>]*>', '', text)
+        text = text.replace('</irc_message>', '')
+        text = _re.sub(r'<external_content[^>]*>', '', text)
+        text = text.replace('</external_content>', '')
+        return text.strip()
+
     def _derive_web_query_from_context(self, context: MessageContext) -> str:
         history = list(self._history_for(context.history_scope))
         for message in reversed(history):
             if message.get("role") != "user":
                 continue
             content = str(message.get("content", "")).strip()
+            # Strip structural isolation tags before attempting to parse
+            content = self._strip_isolation_tags(content)
             speaker, body = split_attributed_turn(content)
             candidate = body if speaker else content
             candidate = candidate.strip()

@@ -341,7 +341,8 @@ class ChannelParticipationTests(unittest.TestCase):
         context = MessageContext(nick='alice', target='#ussycode', is_private=False)
         messages = bot._build_messages(context, 'what changed?', 'system prompt')
 
-        self.assertEqual(messages[-1]['content'], 'alice: what changed?')
+        self.assertIn('what changed?', messages[-1]['content'])
+        self.assertIn('alice', messages[-1]['content'])
         self.assertIn('live multi-user IRC channel', messages[0]['content'])
         self.assertTrue(any(message['content'].startswith('IRC environment:') for message in messages))
 
